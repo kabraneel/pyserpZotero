@@ -52,6 +52,7 @@ class SerpZot:
         
         # For shared dict
         self.CITATION_DICT = dict()
+        self.downloadAttachment = dict()
         self.lock = threading.Lock()
         
         # Override default values with values from config.yaml
@@ -147,6 +148,16 @@ class SerpZot:
         return 0
 
     def serpSearch(self, term, min_year, save_bib):
+        """
+        Searches on medArxiv and returns adds the dois to a list
+
+        Parameters:
+        - term (str): The query to search for
+        - min_year(int): The year after which the search should be done
+
+        Returns:
+        - (list): a list of DOIs
+        """
         # Search Parameters
         params = {
             "api_key": self.SERP_API_KEY,
@@ -202,7 +213,7 @@ class SerpZot:
 
             # Get the Citation from SerpApi search!
             params = {
-                "api_key": self.API_KEY,
+                "api_key": self.SERP_API_KEY,
                 "device": "desktop",
                 "engine": "google_scholar_cite",
                 "q": i
@@ -236,6 +247,15 @@ class SerpZot:
         return doiList
 
     def searchArxiv( self, query ):
+        """
+        Searches on arxiv and returns adds the dois to a list
+
+        Parameters:
+        - query (str): The query to search for
+
+        Returns:
+        - (list): a list of DOIs
+        """
         queryList = query.split()
         queryStr = "+".join(queryList)
         doiList = []
@@ -259,6 +279,15 @@ class SerpZot:
         return doiList
     
     def searchMedArxiv( self, query):
+        """
+        Searches on medArxiv and returns adds the dois to a list
+
+        Parameters:
+        - query (str): The query to search for
+
+        Returns:
+        - (list): a list of DOIs
+        """
         # medxriv link looks like https://www.medrxiv.org/search/humanoid+robot
 
         queryList = query.split()
@@ -286,6 +315,15 @@ class SerpZot:
         return doiList
     
     def boiArxivSearch( self, query ):
+        """
+        Searches on bioArxiv and returns adds the dois to a list
+
+        Parameters:
+        - query (str): The query to search for
+
+        Returns:
+        - (list): a list of DOIs
+        """
         # biorxiv link looks like https://www.biorxiv.org/search/breast+Cancer
 
         queryList = query.split()
@@ -337,6 +375,7 @@ class SerpZot:
             }
 
         if downloadSources.get('serp'):
+            print("Starting Serp Search")
             serpDoiList = self.serpSearch(term, min_year, save_bib)
             doiSet.update(serpDoiList)
 
@@ -369,7 +408,7 @@ class SerpZot:
         Returns:
         - (int): Status code indicating success (0) or failure (non-zero).
         """
-        
+        self.SAVE_BIB = False
         if citation:
             print("Starting citation thread")
             for doi, abstract in doiSet:
@@ -486,6 +525,9 @@ class SerpZot:
                     print(template)
                     if template["doi"] in self.DOI_HOLDER:
                         print("Not citation uploading since it's already present in Zotero")
+                        if template["doi"] in self.downloadAttachment:
+                            print("Still attempting download since attachment is not present")
+                            self.CITATION_DICT[doi] = ([self.downloadAttachment[doi]], bib_dict)
                         continue
                     if no_author_found:
                         print("No authors found for this paper, skipping upload to zotero")
@@ -515,7 +557,6 @@ class SerpZot:
             if self.enable_pdf_download:
                 self.attempt_pdf_download(items=items, full_lib=full_lib)
             
-
         return 0
     
     
@@ -538,7 +579,6 @@ class SerpZot:
         # Retrieve doi numbers of existing articles to avoid duplication of citations
         print("Reading your library's citations so we can avoid adding duplicates...")
         items = zot.everything(zot.items())
-
         if not self.DOI_HOLDER:  # Populate it only if it's empty
             for item in items:
                 try:
@@ -546,6 +586,11 @@ class SerpZot:
                     if not doi:
                         raise KeyError
                     self.DOI_HOLDER.add(doi)
+                    if item['links'].get('attachment') == None:
+                        # This could also be a pdf document.
+                        if item['data'].get('parentItem') != None:
+                            continue
+                        self.downloadAttachment[doi] =  item['key']
                 except KeyError:
                     try:
                         url = item['data']['url']
@@ -553,81 +598,8 @@ class SerpZot:
                             self.DOI_HOLDER.add(url)
                     except:
                         continue
-
-
-        # For all the DOIs we got using all methods, search citations and add PDFs
-        self.processBibsAndUpload(self.doiSet, zot, items, FIELD)
-        try:
-            ris = self.ris
-            print(f"Number of Google Scholar search results to process : {len(ris)}")
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
-            print("No results? Or an API key problem, maybe?")
-            print("Fatal error!")
-            ris = ""
-
-        # Keep adding all the DOIs we find from all methods to this set, then download them
-        # all the end.
-        doiSet = set()
-        
-        # Processing everything we got from SearchScholar
-        for i in ris:
-
-            # Announce status
-            print(f'Now processing: {i}')
-
-            # Get the Citation from SerpApi search!
-            params = {
-                "api_key": self.SERP_API_KEY,
-                "device": "desktop",
-                "engine": "google_scholar_cite",
-                "q": i
-            }
-
-            search = GoogleSearch(params)
-            citation = search.get_dict()
-
-            # Cross-reference the Citation with Crossref to Get Bibtext
-            base     = 'https://api.crossref.org/works?query.'
-            api_url  = {'bibliographic': citation['citations'][1]['snippet']}
-            url      = urlencode(api_url)
-            url      = base + url
-            response = requests.get(url)
-
-            # Parse Bibtext from Crossref
-            try:
-                jsonResponse = response.json()
-                jsonResponse = jsonResponse['message']
-                jsonResponse = jsonResponse['items']
-                jsonResponse = jsonResponse[0]
-            except Exception as e:
-                print(f"An error occurred: {str(e)}")
-                continue
-            doiSet.add((jsonResponse['DOI'], df['snippet'][0]))
-
-
-        # arXiv processing of DOIs
-        query = urllib.parse.quote_plus(query)
-        url = f"http://export.arxiv.org/api/query?search_query=all:{query}&start=0&max_results=50"
-        r = libreq.urlopen(url).read()
-        out = re.findall('http:\/\/dx.doi.org\/[^"]*', str(r))
-        arxivCount = 0
-        for doiLink in out:
-            try:
-                doi = doiLink.split("http://dx.doi.org/")[1]
-                print("Found doi link", doi)
-                arxivCount += 1
-                doiSet.add(tuple([doi, None]))
-            except:
-                print("Wrong Link")
-                continue
-        print("Number of entries found in arXiv Search: ", arxivCount)
-
-        # TODO search in bioXriv and medXriv
-
-        # For all the DOIs we got using all methods, search citations and add PDFs
-        
-        # Running citation and download parallely
+                
+        doiSet = self.doiSet
         citation_thread = threading.Thread(target=self.processBibsAndUpload, args=(doiSet, zot, items, FIELD, True))
         upload_thread = threading.Thread(target=self.processBibsAndUpload, args=(doiSet, zot, items, FIELD, False))
         
@@ -713,6 +685,7 @@ def main():
         download_pdfs = True
     else:
         download_pdfs = False
+
     downloadSources = {
         "serp": 1,
         "arxiv": 1,
@@ -731,7 +704,10 @@ def main():
 
     if config.get("NO_MEDARXIV"):
         del downloadSources["medArxiv"]
-        
+    
+    if len(downloadSources) == 0:
+        downloadSources = None
+
     min_year = input("Enter the oldest year to search from (leave empty if none): ")
     term_string = input("Enter one or more (max up to 20) search terms/phrases separated by semi-colon(;): ")
     
@@ -755,11 +731,8 @@ def main():
         
 
         serp_zot = SerpZot(serp_api_key, zot_id, zot_key, download_dest, download_pdfs)
-        serp_zot.SearchScholar(term, min_year)
+        serp_zot.SearchScholar(term, min_year, downloadSources=downloadSources)
         serp_zot.Search2Zotero(term)
-    # serp_zot = SerpZot(serp_api_key, zot_id, zot_key, download_dest, download_pdfs)
-    # serp_zot.SearchScholar(term, min_year)
-    # serp_zot.Search2Zotero(term)
 
         if download_pdfs:
             print("Attempting to download PDFs...")
